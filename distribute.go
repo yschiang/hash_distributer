@@ -7,16 +7,46 @@ import (
 	"math/rand"
 	"os"
 	"time"
+
+	"github.com/cespare/xxhash/v2"
 )
 
-// RouteRequest determines the backend group based on request_id and distribution percentages.
-func RouteRequest(requestID string, distribution []int) (string, string) {
-	// Step 1: Hash the request_id using MD5 and use the full hash value
-	hash := md5.Sum([]byte(requestID))
-	hashValue := binary.BigEndian.Uint64(hash[:8]) % 100 // Use the first 8 bytes for better entropy
+// Hasher defines the interface for different hashing strategies.
+type Hasher interface {
+	Hash(input string) uint64
+}
+
+// MD5Hasher implements the Hasher interface using MD5.
+type MD5Hasher struct{}
+
+func (h MD5Hasher) Hash(input string) uint64 {
+	hash := md5.Sum([]byte(input))
+	return binary.BigEndian.Uint64(hash[:8])
+}
+
+// XXHashHasher implements the Hasher interface using xxHash.
+type XXHashHasher struct{}
+
+func (h XXHashHasher) Hash(input string) uint64 {
+	return xxhash.Sum64([]byte(input))
+}
+
+// DefaultHasher is the default hashing strategy (MD5).
+var DefaultHasher Hasher = XXHashHasher{}
+
+// RouteRequest determines the backend group based on request_id, distribution percentages, and hashing strategy.
+func RouteRequest(requestID string, distribution []int, hasher ...Hasher) (string, string) {
+	// Use the provided hasher or default to MD5Hasher
+	chosenHasher := DefaultHasher
+	if len(hasher) > 0 {
+		chosenHasher = hasher[0]
+	}
+
+	// Step 1: Hash the request_id using the chosen hasher
+	hashValue := chosenHasher.Hash(requestID) % 100 // Map to a percentage range
 
 	// Convert hash to a readable hex string
-	hashString := fmt.Sprintf("%x", hash[:8])
+	hashString := fmt.Sprintf("%x", hashValue)
 
 	// Step 2: Determine the group based on the cumulative distribution
 	cumulative := 0
@@ -31,14 +61,7 @@ func RouteRequest(requestID string, distribution []int) (string, string) {
 }
 
 // Test_Distribution tests a list of IDs and calculates the actual distribution.
-func Test_Distribution(ids []string, distribution []int, iterations int, outputFilePath string) (map[string]int, bool) {
-	outputFile, err := os.Create(outputFilePath)
-	if err != nil {
-		fmt.Printf("Error creating output file: %v\n", err)
-		return nil, false
-	}
-	defer outputFile.Close()
-
+func Test_Distribution(ids []string, distribution []int, iterations int, hasher Hasher, outputFile *os.File) (map[string]int, bool) {
 	overallGroupCounts := make(map[string]int)
 	multipleGroups := false
 
@@ -46,7 +69,7 @@ func Test_Distribution(ids []string, distribution []int, iterations int, outputF
 		groupCounts := make(map[string]int)
 		var hashString string
 		for i := 0; i < iterations; i++ {
-			group, hash := RouteRequest(id, distribution)
+			group, hash := RouteRequest(id, distribution, hasher)
 			hashString = hash
 			groupCounts[group]++
 			overallGroupCounts[group]++
@@ -102,7 +125,13 @@ func randomString(length int) string {
 func Test_SimpleDistribution(d1, d2 int) {
 	rand.Seed(time.Now().UnixNano()) // Seed random number generator
 
-	outputFilePath := fmt.Sprintf("testdata/Test1_SimpleDistribution_%d_%d.output", d1, d2)
+	// Open output file
+	outputFile, err := os.Create(fmt.Sprintf("Test1_SimpleDistribution_%d_%d.output", d1, d2))
+	if err != nil {
+		fmt.Println("Error creating output file:", err)
+		return
+	}
+	defer outputFile.Close()
 
 	// Generate 1000 random IDs
 	numIDs := 1000
@@ -112,7 +141,7 @@ func Test_SimpleDistribution(d1, d2 int) {
 	// Test distribution
 	distribution := []int{d1, d2}
 	fmt.Printf("\n===== Testing %d-%d Distribution =====\n", d1, d2)
-	groupCounts, multipleGroups := Test_Distribution(randomIDs, distribution, iterations, outputFilePath)
+	groupCounts, multipleGroups := Test_Distribution(randomIDs, distribution, iterations, DefaultHasher, outputFile)
 	fmt.Printf("\nSummary of %d-%d Distribution:\n", d1, d2)
 	if count, exists := groupCounts["Group 1"]; exists {
 		fmt.Printf("Group 1: %d (%.2f%%)\n", count, float64(count)/(float64(numIDs)*float64(iterations))*100)
@@ -133,10 +162,16 @@ func Test_HashWithVariations(d1, d2 int) {
 	distribution := []int{d1, d2}
 
 	for _, idType := range idTypes {
-		outputFilePath := fmt.Sprintf("testdata/Test2_HashWithVariations_%d_%d_%s.output", d1, d2, idType)
+		outputFile, err := os.Create(fmt.Sprintf("Test2_HashWithVariations_%d_%d_%s.output", d1, d2, idType))
+		if err != nil {
+			fmt.Println("Error creating output file:", err)
+			continue
+		}
+		defer outputFile.Close()
+
 		fmt.Printf("\n===== Testing %d-%d Distribution with ID Type: %s =====\n", d1, d2, idType)
 		ids := Test_GenerateRandomIDs(1000, idType) // Generate 1000 IDs of the current type
-		groupCounts, multipleGroups := Test_Distribution(ids, distribution, iterations, outputFilePath)
+		groupCounts, multipleGroups := Test_Distribution(ids, distribution, iterations, DefaultHasher, outputFile)
 		fmt.Printf("\nSummary for ID Type: %s\n", idType)
 		if count, exists := groupCounts["Group 1"]; exists {
 			fmt.Printf("Group 1: %d (%.2f%%)\n", count, float64(count)/(float64(len(ids)*iterations))*100)
@@ -162,7 +197,7 @@ func Test_BenchmarkTiming(d1, d2 int) {
 		start := time.Now()         // Start timing
 		for i := 0; i < 1000; i++ { // Run 1000 iterations for benchmarking
 			for _, id := range ids {
-				RouteRequest(id, distribution)
+				RouteRequest(id, distribution, DefaultHasher)
 			}
 		}
 		duration := time.Since(start) // Calculate elapsed time
@@ -174,11 +209,6 @@ func Test_BenchmarkTiming(d1, d2 int) {
 }
 
 func main() {
-	// Ensure testdata folder exists
-	if _, err := os.Stat("testdata"); os.IsNotExist(err) {
-		os.Mkdir("testdata", os.ModePerm)
-	}
-
 	// Run Test_SimpleDistribution with different distributions
 	Test_SimpleDistribution(50, 50)
 	Test_SimpleDistribution(70, 30)
