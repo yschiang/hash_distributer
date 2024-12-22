@@ -28,12 +28,19 @@ Other ID formats can be easily accommodated without modification to the core log
 - **Example Ratios**: `50-50`, `70-30`
 - **Results**:
 
-```vbnet
+```
 ===== Testing 50-50 Distribution =====
 Group 1: 4978 (49.78%)
 Group 2: 5022 (50.22%)
 Is there any ID distributed to more than 1 group? false
+
+===== Testing 70-30 Distribution =====
+Group 1: 7060 (70.60%)
+Group 2: 2940 (29.40%)
+Is there any ID distributed to more than 1 group? false
 ```
+
+
 
 ### 2. `Test_HashWithVariations`
 - **Objective**: Test robustness with different input formats.
@@ -67,9 +74,6 @@ Benchmark for ID Type tool: Total time = 234.947ms, Average time per computation
 Benchmark for ID Type string: Total time = 230.522ms, Average time per computation = 230ns
 ```
 
-## Extensibility
-- New ID formats can be easily integrated into the system by modifying or extending the `Test_GenerateRandomIDs` function.
-- The hash-based logic remains agnostic to input type, ensuring future-proofing for diverse use cases.
 
 ## Enhancement Suggestions
 
